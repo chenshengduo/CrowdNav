@@ -15,3 +15,13 @@ class Human(Agent):
         state = JointState(self.get_full_state(), ob)
         action = self.policy.predict(state)
         return action
+
+    def act_static(self, ob):
+        """
+        The state for human is its full state and all other agents' observable states
+        :param ob:
+        :return:
+        """
+        state = JointState(self.get_full_state(), ob)
+        action = ActionXY(0, 0)
+        return action
