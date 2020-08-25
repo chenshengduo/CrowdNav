@@ -1,3 +1,10 @@
+# CrowdNav with UWB as detection sensor
+This repository is forked from CrowNav. For the experiment usages, I add the UWB detection module. In the simulation, there are 3 static obstacle(human) and 3 other robots. The controlled robot using UWB to detect the static obstacles as well as fusing other robot's UWB reading.
+
+# Current issue
+The calculation of UWB detection use the Sympy package and the calculation time is quite long.
+
+
 # CrowdNav
 This repository contains the codes for our ICRA 2019 paper. For more details, please refer to the paper
 [Crowd-Robot Interaction: Crowd-aware Robot Navigation with Attention-based Deep Reinforcement Learning](https://arxiv.org/abs/1809.08835).
