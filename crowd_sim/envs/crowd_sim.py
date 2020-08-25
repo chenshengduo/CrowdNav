@@ -12,6 +12,7 @@ from crowd_sim.envs.utils.state import ObservableState
 #for intersection detection
 from sympy import *
 from sympy.geometry import *
+import time
 
 class CrowdSim(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -53,6 +54,7 @@ class CrowdSim(gym.Env):
         self.states = None
         self.action_values = None
         self.attention_weights = None
+        self.static_human_state = []
 
     def configure(self, config):
         self.config = config
@@ -146,6 +148,7 @@ class CrowdSim(gym.Env):
                             break
                     human.set(px, py, px, py, 0, 0, 0)
                     self.humans.append(human)
+                    
             else:
                 # the first 2 two humans will be in the circle crossing scenarios
                 # the rest humans will have a random starting and end position
@@ -178,6 +181,7 @@ class CrowdSim(gym.Env):
                             break
                     human.set(px, py, px, py, 0, 0, 0)
                     self.humans.append(human)
+                    self.static_human_state.append(human.get_observable_state())
                 else:
                     self.humans.append(self.generate_circle_crossing_human())
         else:
@@ -255,7 +259,8 @@ class CrowdSim(gym.Env):
         for human in self.humans:
             sim.addAgent(human.get_position(), *params, human.radius, human.v_pref, human.get_velocity())
 
-        max_time = 1000
+        # max_time = 1000
+        max_time = 100
         while not all(self.human_times):
             for i, agent in enumerate([self.robot] + self.humans):
                 vel_pref = np.array(agent.get_goal_position()) - np.array(agent.get_position())
@@ -340,8 +345,7 @@ class CrowdSim(gym.Env):
         elif self.robot.sensor == 'RGB':
             raise NotImplementedError
         elif self.robot.sensor == 'UWB':
-            ob = self.cal_uwb_obs()
-
+            ob = self.cal_uwb_obs()        
         return ob
 
     def cal_uwb_obs(self):
@@ -351,10 +355,12 @@ class CrowdSim(gym.Env):
             if human_index >= 3:
                 obs_list.append(human.get_observable_state())
                 uwb_ob = self.block_detection(human)
-                if(uwb_ob is not None):
+                if uwb_ob is not None:
                     for i in range(len(uwb_ob)):
                         obs = self.cal_obs_pos(human,uwb_ob[i])
                         obs_list.append(obs)
+                else:
+                    obs_list.append(static_state for static_state in self.static_human_state)
             human_index += 1
         robot_obs = self.block_detection(self.robot)
         if robot_obs is not None:
@@ -362,38 +368,74 @@ class CrowdSim(gym.Env):
                 obs_list.append(self.cal_obs_pos(self.robot,robot_obs[i]))       
         return obs_list
 
-    def cal_next_uwb_obs(self):
+    def cal_next_uwb_obs(self,in_action,human_actions):
         obs_list = []
         human_index = 0
         for human,action in zip(self.humans, human_actions):
             ob = human.get_next_observable_state(action)
             if human_index >= 3:
-                obs_list.append(human.get_observable_state())
-                uwb_ob = self.block_detection(human)
+                obs_list.append(ob)
+                uwb_ob = self.block_detection_lookahead(ob.px,ob.py,human_actions)
                 if(uwb_ob is not None):
                     for i in range(len(uwb_ob)):
-                        obs = self.cal_obs_pos(human,uwb_ob[i])
+                        obs = self.cal_obs_pos_lookahead(ob,uwb_ob[i])
                         obs_list.append(obs)
+                else:
+                    obs_list.append(static_state for static_state in self.static_human_state)
             human_index += 1
-        robot_obs = self.block_detection(self.robot)
+        robot_next_state = self.robot.get_next_observable_state(in_action)
+        robot_obs = self.block_detection_lookahead(robot_next_state.px,robot_next_state.py,human_actions)
         if robot_obs is not None:
             for i in range(len(robot_obs)):
-                obs_list.append(self.cal_obs_pos(self.robot,robot_obs[i]))       
+                obs_list.append(self.cal_obs_pos_lookahead(robot_next_state,robot_obs[i]))       
         return obs_list
 
     def cal_obs_pos(self, input_rob, input_anchor):
-        anch = [Point(-4.5,-4),Point(-4.5,4),Point(4.5,4),Point(4.5,-4)]
+        anch = [Point(-3,-4.5),Point(-3,4.5),Point(3,4.5),Point(3,-4.5)]
         rob = Circle([input_rob.px,input_rob.py],1.5)#position x,y
         line = Segment(Point(input_rob.px,input_rob.py),anch[input_anchor])
         block = intersection(rob,line)
-        obs = ObservableState(float(block[0].coordinates[0]),float(block[0].coordinates[1]),0,0,0.25)
+        obs = ObservableState(float(block[0].coordinates[0]),float(block[0].coordinates[1]),input_rob.vx,input_rob.vy,0.25)
+        return obs
+
+    def cal_obs_pos_lookahead(self, next_state, input_anchor):
+        anch = [Point(-3,-4.5),Point(-3,4.5),Point(3,4.5),Point(3,-4.5)]
+        rob = Circle([next_state.px,next_state.py],1.5)#position x,y
+        line = Segment(Point(next_state.px,next_state.py),anch[input_anchor])
+        block = intersection(rob,line)
+        obs = ObservableState(float(block[0].coordinates[0]),float(block[0].coordinates[1]),next_state.vx,next_state.vy,0.25)
         return obs
 
     def onestep_lookahead(self, action):
         return self.step(action, update=False)
 
+    def block_detection_lookahead(self,px,py,human_actions):
+        anch = [Point(-3,-4.5),Point(-3,4.5),Point(3,4.5),Point(3,-4.5)]
+        rob = Point(px,py,evaluate = False)#position x,y 
+        next_obs_state = [human.get_next_observable_state(action) for human, action in zip(self.humans, human_actions)]
+        obs = []
+        block = []
+        human_index = 0
+        ob = []
+        for human in next_obs_state:
+            if human_index < 3:
+                obs.append(Circle([human.px,human.py],0.25))
+            human_index += 1       
+        for obstacle in obs:
+            if(rob.distance(obstacle.center)<1.5):
+                for ind in range(4):
+                    anchor = anch[ind]
+                    line = Segment(rob,anchor)
+                    block = intersection(obstacle,line)
+                    if(len(block)>=2):
+                        print("detect static obstacle")
+                        flag = ind
+                        if flag not in ob:
+                            ob.append(flag)#remove duplicate
+        return ob
+
     def block_detection(self,robot_in):
-        anch = [Point(-4.5,-4),Point(-4.5,4),Point(4.5,4),Point(4.5,-4)]
+        anch = [Point(-3,-4.5),Point(-3,4.5),Point(3,4.5),Point(3,-4.5)]
         rob = Point(robot_in.px,robot_in.py,evaluate = False)#position x,y 
         obs = []
         block = []
@@ -410,6 +452,7 @@ class CrowdSim(gym.Env):
                     line = Segment(rob,anchor)
                     block = intersection(obstacle,line)
                     if(len(block)>=2):
+                        print("detect static obstacle")
                         flag = ind
                         if flag not in ob:
                             ob.append(flag)#remove duplicate
@@ -519,7 +562,7 @@ class CrowdSim(gym.Env):
             if self.robot.sensor == 'coordinates':
                 ob = [human.get_next_observable_state(action) for human, action in zip(self.humans, human_actions)]
             elif self.robot.sensor == 'UWB':
-                ob = self.cal_next_uwb_obs()
+                ob = self.cal_next_uwb_obs(action,human_actions)
             elif self.robot.sensor == 'RGB':
                 raise NotImplementedError
 
@@ -619,11 +662,14 @@ class CrowdSim(gym.Env):
             ax.add_artist(time)
 
             # compute attention scores
-            if self.attention_weights is not None:
-                # print(self.attention_weights[0])
-                attention_scores = [
-                    plt.text(-5.5, 5 - 0.5 * i, 'Human {}: {:.2f}'.format(i + 1, self.attention_weights[0][i]),
-                             fontsize=16) for i in range(len(self.humans))]
+            # if self.attention_weights is not None:
+            #     # print(self.attention_weights[0])
+            #     attention_scores = [
+            #         plt.text(-5.5, 5 - 0.5 * i, 'Human {}: {:.2f}'.format(i + 1, self.attention_weights[0][i]),
+            #                  fontsize=16) for i in range(4)]
+                # attention_scores = [
+                #     plt.text(-5.5, 5 - 0.5 * i, 'Human {}: {:.2f}'.format(i + 1, self.attention_weights[0][i]),
+                #              fontsize=16) for i in range(len(self.humans))]
 
             # compute orientation in each step and use arrow to show the direction
             radius = self.robot.radius
@@ -665,9 +711,9 @@ class CrowdSim(gym.Env):
                                                       arrowstyle=arrow_style) for orientation in orientations]
                     for arrow in arrows:
                         ax.add_artist(arrow)
-                    if self.attention_weights is not None:
-                        human.set_color(str(self.attention_weights[frame_num][i]))
-                        attention_scores[i].set_text('human {}: {:.2f}'.format(i, self.attention_weights[frame_num][i]))
+                    # if self.attention_weights is not None:
+                    #     human.set_color(str(self.attention_weights[frame_num][i]))
+                    #     attention_scores[i].set_text('human {}: {:.2f}'.format(i, self.attention_weights[frame_num][i]))
 
                 time.set_text('Time: {:.2f}'.format(frame_num * self.time_step))
 
